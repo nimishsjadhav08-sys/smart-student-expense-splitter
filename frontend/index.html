@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Smart Student Expense Splitter - College Mini Project</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎓</text></svg>">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -15,10 +16,18 @@
                 <h1>🎓 Smart Student Expense Splitter</h1>
                 <p>2nd Year Mini Project • Department of Computer Science & Engineering</p>
             </div>
-            <div id="user-nav-info" class="header-user" style="display: none;">
+            <div id="user-nav-info" class="header-user" style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
                 <span class="badge badge-db" id="db-status-badge">Checking DB...</span>
-                <span>Logged in: <strong id="header-user-name">Student</strong></span>
-                <button class="btn btn-secondary btn-sm" onclick="logout()">Logout</button>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <label for="header-student-select" style="font-size: 13px; font-weight: 600; color: #4a5568;">👤 Viewing as:</label>
+                    <select id="header-student-select" onchange="switchStudentView(this.value)" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #cbd5e0; font-size: 13px; font-weight: 600; background: #fff; cursor: pointer; color: #1a202c;">
+                        <option value="1">Rahul Sharma</option>
+                        <option value="2">Priya Patel</option>
+                        <option value="3">Amit Kumar</option>
+                        <option value="4">Sneha Verma</option>
+                    </select>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="showAddStudentPrompt()">➕ Add Student</button>
             </div>
         </div>
     </header>
@@ -27,9 +36,9 @@
     <main>
 
         <!-- ========================================== -->
-        <!-- 1. AUTHENTICATION SECTION (Login / Register) -->
+        <!-- 1. AUTHENTICATION SECTION (Hidden - direct access) -->
         <!-- ========================================== -->
-        <section id="auth-section" class="auth-wrapper">
+        <section id="auth-section" class="auth-wrapper" style="display: none;">
             <div class="card">
                 <div class="nav-tabs" style="border-bottom: none; margin-bottom: 15px;">
                     <button id="tab-login-btn" class="tab-btn active" onclick="switchAuthTab('login')">Student Login</button>
@@ -88,7 +97,7 @@
         <!-- ========================================== -->
         <!-- 2. MAIN APPLICATION SECTION -->
         <!-- ========================================== -->
-        <section id="main-section" style="display: none;">
+        <section id="main-section" style="display: block;">
 
             <!-- Main Navigation Tabs -->
             <div class="nav-tabs">
@@ -225,12 +234,15 @@
             <!-- TAB 3: EXPENSE HISTORY -->
             <div id="tab-history" class="tab-content" style="display: none;">
                 <div class="card">
-                    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <div>
                             <h2>📜 Expense History</h2>
                             <p>All recorded expenses with split shares</p>
                         </div>
-                        <button class="btn btn-secondary btn-sm" onclick="loadExpenseHistory()">🔄 Refresh List</button>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-secondary btn-sm" onclick="exportExpensesToCSV()">📥 Export CSV</button>
+                            <button class="btn btn-secondary btn-sm" onclick="loadExpenseHistory()">🔄 Refresh List</button>
+                        </div>
                     </div>
 
                     <div class="table-responsive">

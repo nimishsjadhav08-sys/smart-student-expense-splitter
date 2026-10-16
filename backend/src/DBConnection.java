@@ -17,12 +17,16 @@ import java.util.Map;
 
 public class DBConnection {
 
-    // Standard MySQL Configuration
-    private static final String DB_URL = "jdbc:mysql://localhost:3306/student_expense_db?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true";
-    private static final String DB_USER = "root";
-    private static final String DB_PASSWORD = ""; // Common default in XAMPP; can be changed to "root" or custom
+    // Database Configuration with Environment Variable Support
+    private static String dbHost = "localhost";
+    private static String dbPort = "3306";
+    private static String dbName = "student_expense_db";
+    private static String dbUser = "root";
+    private static String dbPassword = "";
+    private static String dbUrl = "";
 
     private static boolean useMySQL = false;
+    private static boolean initialized = false;
     private static Connection connection = null;
 
     // In-Memory Fallback Storage (Used if MySQL is not installed or not running)
@@ -35,23 +39,141 @@ public class DBConnection {
         initDatabase();
     }
 
-    public static synchronized void initDatabase() {
+    public static synchronized Connection getConnection() {
         try {
-            // Try loading the MySQL JDBC Driver
+            if (useMySQL && (connection == null || connection.isClosed() || !connection.isValid(2))) {
+                System.out.println("[Database] Connection dropped or inactive. Reconnecting...");
+                initialized = false;
+                initDatabase();
+            }
+        } catch (Exception e) {
+            System.err.println("[Database] Reconnection check failed: " + e.getMessage());
+            initialized = false;
+            initDatabase();
+        }
+        return connection;
+    }
+
+    public static synchronized void initDatabase() {
+        if (initialized) return;
+        initialized = true;
+
+        String skipEnv = System.getenv("SKIP_MYSQL");
+        if ("true".equalsIgnoreCase(skipEnv) || "1".equals(skipEnv)) {
+            useMySQL = false;
+            System.out.println("[Database] MySQL skipped (SKIP_MYSQL requested).");
+            System.out.println("[Database] -> Running in IN-MEMORY MODE (Instant Start with Demo Data).");
+            loadSeedDataInMemory();
+            return;
+        }
+
+        // Read configuration from environment variables (Cloud / Docker / Custom local)
+        resolveDatabaseConfig();
+
+        try {
+            // Load MySQL JDBC Driver
             Class.forName("com.mysql.cj.jdbc.Driver");
-            connection = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+
+            // Attempt primary connection
+            connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword);
 
             if (connection != null && !connection.isClosed()) {
                 useMySQL = true;
-                System.out.println("[Database] Successfully connected to MySQL database: student_expense_db");
+                System.out.println("[Database] Successfully connected to MySQL database: " + dbName + " at " + dbHost + ":" + dbPort);
                 createTablesIfNotExist();
+                return;
             }
         } catch (Exception e) {
+            // Only attempt password 'root' if it was an authentication error, not connection refused
+            String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            boolean isAuthError = msg.contains("access denied") || (e instanceof SQLException && ((SQLException) e).getErrorCode() == 1045);
+            if (isAuthError && "localhost".equalsIgnoreCase(dbHost) && "".equals(dbPassword)) {
+                try {
+                    System.out.println("[Database] Trying alternative local password ('root')...");
+                    connection = DriverManager.getConnection(dbUrl, dbUser, "root");
+                    if (connection != null && !connection.isClosed()) {
+                        useMySQL = true;
+                        dbPassword = "root";
+                        System.out.println("[Database] Connected to MySQL using password 'root'!");
+                        createTablesIfNotExist();
+                        return;
+                    }
+                } catch (Exception ignored) {}
+            }
+
             useMySQL = false;
             System.out.println("[Database] MySQL not reachable (" + e.getMessage() + ").");
             System.out.println("[Database] -> Running in IN-MEMORY MODE (Built-in Demo Data active for viva presentation).");
             loadSeedDataInMemory();
         }
+    }
+
+    private static void resolveDatabaseConfig() {
+        String envDbUrl = System.getenv("JDBC_DATABASE_URL");
+        if (envDbUrl == null || envDbUrl.isEmpty()) {
+            envDbUrl = System.getenv("DB_URL");
+        }
+
+        // Support cloud format: DATABASE_URL=mysql://user:pass@host:port/dbname
+        String rawDbUrl = System.getenv("DATABASE_URL");
+        if (rawDbUrl != null && !rawDbUrl.isEmpty() && (envDbUrl == null || envDbUrl.isEmpty())) {
+            if (rawDbUrl.startsWith("mysql://")) {
+                try {
+                    String clean = rawDbUrl.substring("mysql://".length());
+                    String userInfo = "";
+                    String hostPortDb = clean;
+                    if (clean.contains("@")) {
+                        String[] parts = clean.split("@", 2);
+                        userInfo = parts[0];
+                        hostPortDb = parts[1];
+                    }
+                    if (!userInfo.isEmpty()) {
+                        String[] uParts = userInfo.split(":", 2);
+                        dbUser = uParts[0];
+                        if (uParts.length > 1) dbPassword = uParts[1];
+                    }
+                    String[] hParts = hostPortDb.split("/", 2);
+                    String hostPort = hParts[0];
+                    if (hParts.length > 1) {
+                        dbName = hParts[1].split("\\?")[0];
+                    }
+                    if (hostPort.contains(":")) {
+                        String[] hp = hostPort.split(":", 2);
+                        dbHost = hp[0];
+                        dbPort = hp[1];
+                    } else {
+                        dbHost = hostPort;
+                    }
+                    dbUrl = "jdbc:mysql://" + dbHost + ":" + dbPort + "/" + dbName + "?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC";
+                    return;
+                } catch (Exception ex) {
+                    System.err.println("[Database] Could not parse DATABASE_URL: " + ex.getMessage());
+                }
+            } else if (rawDbUrl.startsWith("jdbc:mysql://")) {
+                envDbUrl = rawDbUrl;
+            }
+        }
+
+        if (envDbUrl != null && !envDbUrl.isEmpty()) {
+            dbUrl = envDbUrl;
+        } else {
+            String envHost = System.getenv("DB_HOST");
+            if (envHost != null && !envHost.isEmpty()) dbHost = envHost;
+
+            String envPort = System.getenv("DB_PORT");
+            if (envPort != null && !envPort.isEmpty()) dbPort = envPort;
+
+            String envName = System.getenv("DB_NAME");
+            if (envName != null && !envName.isEmpty()) dbName = envName;
+
+            dbUrl = "jdbc:mysql://" + dbHost + ":" + dbPort + "/" + dbName + "?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&connectTimeout=1000&socketTimeout=1500";
+        }
+
+        String envUser = System.getenv("DB_USER");
+        if (envUser != null && !envUser.isEmpty()) dbUser = envUser;
+
+        String envPass = System.getenv("DB_PASSWORD");
+        if (envPass != null) dbPassword = envPass;
     }
 
     private static void createTablesIfNotExist() {
@@ -147,9 +269,10 @@ public class DBConnection {
     // ==========================================
 
     public static synchronized Student login(String email, String password) {
-        if (useMySQL) {
+        Connection conn = getConnection();
+        if (useMySQL && conn != null) {
             String sql = "SELECT id, name, email, password FROM students WHERE email = ? AND password = ?";
-            try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
                 pstmt.setString(1, email);
                 pstmt.setString(2, password);
                 try (ResultSet rs = pstmt.executeQuery()) {
@@ -172,9 +295,10 @@ public class DBConnection {
     }
 
     public static synchronized Student register(String name, String email, String password) {
-        if (useMySQL) {
+        Connection conn = getConnection();
+        if (useMySQL && conn != null) {
             String checkSql = "SELECT id FROM students WHERE email = ?";
-            try (PreparedStatement checkStmt = connection.prepareStatement(checkSql)) {
+            try (PreparedStatement checkStmt = conn.prepareStatement(checkSql)) {
                 checkStmt.setString(1, email);
                 try (ResultSet rs = checkStmt.executeQuery()) {
                     if (rs.next()) return null; // Email already registered
@@ -184,7 +308,7 @@ public class DBConnection {
             }
 
             String insertSql = "INSERT INTO students (name, email, password) VALUES (?, ?, ?)";
-            try (PreparedStatement insertStmt = connection.prepareStatement(insertSql, Statement.RETURN_GENERATED_KEYS)) {
+            try (PreparedStatement insertStmt = conn.prepareStatement(insertSql, Statement.RETURN_GENERATED_KEYS)) {
                 insertStmt.setString(1, name);
                 insertStmt.setString(2, email);
                 insertStmt.setString(3, password);
@@ -212,9 +336,10 @@ public class DBConnection {
 
     public static synchronized List<Student> getAllStudents() {
         List<Student> list = new ArrayList<>();
-        if (useMySQL) {
+        Connection conn = getConnection();
+        if (useMySQL && conn != null) {
             String sql = "SELECT id, name, email, password FROM students ORDER BY id ASC";
-            try (Statement stmt = connection.createStatement();
+            try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
                 while (rs.next()) {
                     list.add(new Student(rs.getInt("id"), rs.getString("name"), rs.getString("email"), rs.getString("password")));
@@ -240,11 +365,12 @@ public class DBConnection {
     // ==========================================
 
     public static synchronized List<Expense> getAllExpenses() {
-        if (useMySQL) {
+        Connection conn = getConnection();
+        if (useMySQL && conn != null) {
             List<Expense> expenses = new ArrayList<>();
             String sql = "SELECT e.id, e.title, e.amount, e.paid_by_id, e.created_at, s.name as paid_by_name "
                     + "FROM expenses e JOIN students s ON e.paid_by_id = s.id ORDER BY e.id DESC";
-            try (Statement stmt = connection.createStatement();
+            try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
                 while (rs.next()) {
                     int expenseId = rs.getInt("id");
@@ -260,7 +386,7 @@ public class DBConnection {
                     // Fetch splits for this expense
                     String splitSql = "SELECT es.student_id, es.split_amount, s.name FROM expense_splits es "
                             + "JOIN students s ON es.student_id = s.id WHERE es.expense_id = ?";
-                    try (PreparedStatement pstmt = connection.prepareStatement(splitSql)) {
+                    try (PreparedStatement pstmt = conn.prepareStatement(splitSql)) {
                         pstmt.setInt(1, expenseId);
                         try (ResultSet splitRs = pstmt.executeQuery()) {
                             while (splitRs.next()) {
@@ -290,9 +416,10 @@ public class DBConnection {
         }
         double perPerson = amount / studentIds.size();
 
-        if (useMySQL) {
+        Connection conn = getConnection();
+        if (useMySQL && conn != null) {
             String insertExpense = "INSERT INTO expenses (title, amount, paid_by_id) VALUES (?, ?, ?)";
-            try (PreparedStatement pstmt = connection.prepareStatement(insertExpense, Statement.RETURN_GENERATED_KEYS)) {
+            try (PreparedStatement pstmt = conn.prepareStatement(insertExpense, Statement.RETURN_GENERATED_KEYS)) {
                 pstmt.setString(1, title);
                 pstmt.setDouble(2, amount);
                 pstmt.setInt(3, paidById);
@@ -307,7 +434,7 @@ public class DBConnection {
 
                 if (expenseId != -1) {
                     String insertSplit = "INSERT INTO expense_splits (expense_id, student_id, split_amount) VALUES (?, ?, ?)";
-                    try (PreparedStatement splitStmt = connection.prepareStatement(insertSplit)) {
+                    try (PreparedStatement splitStmt = conn.prepareStatement(insertSplit)) {
                         for (int sid : studentIds) {
                             splitStmt.setInt(1, expenseId);
                             splitStmt.setInt(2, sid);
@@ -342,9 +469,10 @@ public class DBConnection {
     }
 
     public static synchronized boolean deleteExpense(int expenseId) {
-        if (useMySQL) {
+        Connection conn = getConnection();
+        if (useMySQL && conn != null) {
             String sql = "DELETE FROM expenses WHERE id = ?";
-            try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
                 pstmt.setInt(1, expenseId);
                 int rows = pstmt.executeUpdate();
                 return rows > 0;

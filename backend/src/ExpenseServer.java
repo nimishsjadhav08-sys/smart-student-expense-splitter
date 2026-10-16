@@ -25,7 +25,7 @@ import java.util.regex.Pattern;
 
 public class ExpenseServer {
 
-    private static final int PORT = 8080;
+    private static final int PORT = 3000;
     private static File frontendDir;
 
     public static void main(String[] args) throws IOException {
@@ -36,27 +36,33 @@ public class ExpenseServer {
         System.out.println("==================================================");
         System.out.println("[Server] Serving Frontend from: " + frontendDir.getAbsolutePath());
 
-        // Initialize Database Connection
-        DBConnection.initDatabase();
-
-        // Start Built-in HTTP Server (Auto-retry next port if 8080 is busy)
+        // Start Built-in HTTP Server (Auto-retry next port if busy, unless fixed port is given via env)
         int port = PORT;
-        if (args != null && args.length > 0) {
+        String envPort = System.getenv("PORT");
+        boolean isEnvPort = false;
+        if (envPort != null && !envPort.trim().isEmpty()) {
+            try {
+                port = Integer.parseInt(envPort.trim());
+                isEnvPort = true;
+            } catch (NumberFormatException ignored) {}
+        } else if (args != null && args.length > 0) {
             try {
                 port = Integer.parseInt(args[0]);
+                isEnvPort = true;
             } catch (NumberFormatException ignored) {}
         }
 
         HttpServer server = null;
-        for (int p = port; p <= port + 10; p++) {
+        int maxAttempts = isEnvPort ? 1 : 10;
+        for (int p = port; p < port + maxAttempts; p++) {
             try {
                 server = HttpServer.create(new InetSocketAddress(p), 0);
                 port = p;
                 break;
             } catch (java.net.BindException e) {
                 System.out.println("[Server] Port " + p + " is already in use by another process.");
-                if (p == port + 10) {
-                    System.err.println("[Server] Unable to bind to any port from " + port + " to " + (port + 10) + ".");
+                if (p == port + maxAttempts - 1) {
+                    System.err.println("[Server] Unable to bind to port " + p + ".");
                     throw e;
                 }
                 System.out.println("[Server] Automatically trying port " + (p + 1) + "...");
@@ -64,6 +70,7 @@ public class ExpenseServer {
         }
 
         // API Contexts
+        server.createContext("/api/health", new HealthHandler());
         server.createContext("/api/login", new LoginHandler());
         server.createContext("/api/register", new RegisterHandler());
         server.createContext("/api/students", new StudentsHandler());
@@ -79,6 +86,9 @@ public class ExpenseServer {
         System.out.println("[Server] Server successfully started at http://localhost:" + port + "/");
         System.out.println("[Server] Open http://localhost:" + port + "/ in your web browser.");
         System.out.println("==================================================");
+
+        // Initialize Database Connection
+        DBConnection.initDatabase();
     }
 
     private static File findFrontendDirectory() {
@@ -98,6 +108,21 @@ public class ExpenseServer {
     // Handlers
     // ==========================================
 
+    static class HealthHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            addCorsHeaders(exchange);
+            if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(204, -1);
+                return;
+            }
+            String mode = DBConnection.isUsingMySQL() ? "MySQL" : "In-Memory";
+            long now = System.currentTimeMillis();
+            String json = "{\"status\":\"UP\",\"database\":\"" + mode + "\",\"timestamp\":" + now + "}";
+            sendJsonResponse(exchange, 200, json);
+        }
+    }
+
     static class StaticFileHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -106,24 +131,59 @@ public class ExpenseServer {
                 path = "/index.html";
             }
 
+            // Guard against directory traversal
+            if (path.contains("..")) {
+                sendResponse(exchange, 400, "text/plain", "Bad Request");
+                return;
+            }
+
+            byte[] bytes = null;
             File requestedFile = new File(frontendDir, path.substring(1));
-            if (!requestedFile.exists() || requestedFile.isDirectory()) {
+
+            // 1. Try reading from filesystem
+            try {
+                if (requestedFile.exists() && !requestedFile.isDirectory()) {
+                    String baseCanonical = frontendDir.getCanonicalPath();
+                    String fileCanonical = requestedFile.getCanonicalPath();
+                    if (fileCanonical.startsWith(baseCanonical)) {
+                        try (FileInputStream fis = new FileInputStream(requestedFile)) {
+                            bytes = readAllBytesFromStream(fis);
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            // 2. If not found on filesystem, fallback to classpath / JAR resource
+            if (bytes == null) {
+                InputStream is = ExpenseServer.class.getResourceAsStream("/frontend" + path);
+                if (is == null) {
+                    is = ExpenseServer.class.getResourceAsStream(path);
+                }
+                if (is != null) {
+                    try (InputStream cpIs = is) {
+                        bytes = readAllBytesFromStream(cpIs);
+                    }
+                }
+            }
+
+            if (bytes == null) {
                 sendResponse(exchange, 404, "text/plain", "404 Not Found");
                 return;
             }
 
             String contentType = "text/plain";
-            if (path.endsWith(".html")) contentType = "text/html; charset=UTF-8";
-            else if (path.endsWith(".css")) contentType = "text/css; charset=UTF-8";
-            else if (path.endsWith(".js")) contentType = "application/javascript; charset=UTF-8";
-            else if (path.endsWith(".json")) contentType = "application/json; charset=UTF-8";
-            else if (path.endsWith(".png")) contentType = "image/png";
-            else if (path.endsWith(".ico")) contentType = "image/x-icon";
-
-            byte[] bytes;
-            try (FileInputStream fis = new FileInputStream(requestedFile)) {
-                bytes = readAllBytesFromStream(fis);
-            }
+            String lower = path.toLowerCase();
+            if (lower.endsWith(".html")) contentType = "text/html; charset=UTF-8";
+            else if (lower.endsWith(".css")) contentType = "text/css; charset=UTF-8";
+            else if (lower.endsWith(".js")) contentType = "application/javascript; charset=UTF-8";
+            else if (lower.endsWith(".json")) contentType = "application/json; charset=UTF-8";
+            else if (lower.endsWith(".png")) contentType = "image/png";
+            else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) contentType = "image/jpeg";
+            else if (lower.endsWith(".svg")) contentType = "image/svg+xml";
+            else if (lower.endsWith(".ico")) contentType = "image/x-icon";
+            else if (lower.endsWith(".woff2")) contentType = "font/woff2";
+            else if (lower.endsWith(".woff")) contentType = "font/woff";
+            else if (lower.endsWith(".ttf")) contentType = "font/ttf";
 
             exchange.getResponseHeaders().set("Content-Type", contentType);
             exchange.sendResponseHeaders(200, bytes.length);

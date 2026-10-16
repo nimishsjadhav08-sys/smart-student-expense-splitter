@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.class
+backend/src/*.class
+build/
+*.jar
+*.bat
+*.ps1
+README.md
